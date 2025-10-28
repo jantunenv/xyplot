@@ -1,0 +1,186 @@
+#!/usr/bin/python3
+import matplotlib.pyplot as plt
+import matplotlib
+import numpy as np
+import pandas as pd
+import sys
+import scipy
+import inspect
+import emcee
+from cycler import cycler
+
+class Plotter:
+	def add_comparison_data(self, args):
+		normalize = False
+		fix_start_point = False
+		difference = False
+		for arg in args:
+			if(arg in ["n", "norm", "normalize"]):
+				normalize = True			
+			elif(arg in ["fixstart"]):
+				fix_start_point = True
+			elif(arg in ["difference"]):
+				difference = True
+			else:
+				compare_data = np.loadtxt(arg)
+				if(normalize):
+						total = np.trapz(compare_data[:,1], compare_data[:,0])
+						compare_data[:,1] = compare_data[:,1]/total
+				if(fix_start_point):
+					deltay = self.data[0,1] - compare_data[0,1]
+					compare_data[:,1] = compare_data[:,1] + deltay
+				if(difference):
+					self.data[:,1] = compare_data[:,1] - self.data[:,1]
+				else:
+					plt.plot(compare_data[:,0], compare_data[:,1], label=arg)
+	
+	def normalize(self, args):
+		total = np.trapz(self.data[:,1], self.data[:,0])
+		self.data[:,1] = self.data[:,1]/total
+		
+	def integrated_autocorrelation(self, args):
+		try:
+			act = emcee.autocorr.integrated_time(self.data[:,1])
+			print("ACT:", act)
+		except Exception as e:
+			print(e)
+	
+	def mean_and_error_from_timeseries_data(self, args):
+		try:
+			act = emcee.autocorr.integrated_time(self.data[:,1])
+		except Exception as e:
+			#print(e)
+			#print("Error displayed is not corrected for correlation time")
+			act = [1]
+
+		act = np.max([act[0], 1])
+		mean = np.mean(self.data[:,1])
+		std = np.std(self.data[:,1])
+		N = len(self.data[:,1])
+		err = std/np.sqrt(N/act)
+		if("noround" not in args): 		
+			err_mag = 1 + int(-np.log10(abs(err/mean)))
+			print(u"y = {:.{emag}g} \u00B1 {:.1g}".format(mean,err,emag=err_mag))
+		else:
+			print(u"y = {} \u00B1 {}".format(mean,err))	
+	def errorbars(self, args):
+		plt.errorbar(self.data[:,0], self.data[:,1], self.data[:,2], label=self.filename)
+	
+	def smooth(self, args):
+		if(len(args)==1):
+			n = int(args[0])
+		else:
+			n = int(len(self.data[:,0])/20)
+		self.data[:,1] = np.convolve(self.data[:,1], np.ones(n)/n, "same")
+		self.data = self.data[n:-n,:]
+		
+	def discard_thermalization(self, args):
+		if(len(args)==1):
+			fraction = float(args[0])
+		else:
+			fraction = 0.1
+		#print("discarding first {} of {} datapoints".format(int(fraction*len(self.data[:,1])), len(self.data[:,1])))
+		self.data = self.data[int(fraction*len(self.data[:,1])):,:]	
+		
+	def plot_derivative(self, args):
+		if(len(args)==1):
+			replace = bool(args[0])
+		else:
+			replace = False
+			
+		if(replace):
+			self.data[:,1] = np.gradient(self.data[:,1], self.data[:,0])
+		else:
+			deriv = np.gradient(self.data[:,1], self.data[:,0])
+			plt.plot(self.data[:,0], deriv, label="First derivative")
+		
+	def change_labels(self, args):
+		self.labels = args
+		
+	def set_line_rc_params(self, args):
+		 i = 0
+		 line = {}
+		 while(True):
+			 if(i>len(args)-2):
+				 break
+			 line[args[i]] = args[i+1]
+			 i = i+2
+		 matplotlib.rc('lines', **line)
+	
+	def parse_generic(self, args):
+		 i = 0
+		 while(True):
+			 if(i>len(args)-2):
+				 break
+			 f = getattr(plt, args[i])
+			 f(args[i+1])
+			 i = i+2
+
+	def __init__(self, arglist):
+		self.labels = None
+		self.options = {
+		"-generic" : self.parse_generic,
+		"-therm" : self.discard_thermalization,
+		"-line" : self.set_line_rc_params, 
+		"-color" : lambda args : matplotlib.rc("axes",prop_cycle=cycler(color=args)),
+		"-normalize" : self.normalize,
+		"-derivative" : self.plot_derivative,
+		"-ylim" : lambda args : plt.ylim([float(args[0]), float(args[1])]),
+		"-compare" : self.add_comparison_data,
+		"-act" : self.integrated_autocorrelation,
+		"-smooth" : self.smooth,
+		"-mean" : self.mean_and_error_from_timeseries_data,
+		"-errors" : self.errorbars,
+		"-changelabels" : self.change_labels,
+		"-help" : lambda args : print([key for key in self.options.keys()]),
+		"-dataout" : lambda args : print(self.data)
+		}
+		try:
+			self.filename = arglist[1]
+			self.data = np.loadtxt(self.filename)
+			self.selected_options = {}
+			for i in range(2, len(arglist)):
+				arg = arglist[i]
+				if arg in list(self.options.keys()):
+					self.selected_options[arg] = []
+					for j in range(i+1, len(arglist)):
+						arg2 = arglist[j]
+						if(arg2 not in self.options): 
+							self.selected_options[arg].append(arg2)
+						else:
+							break
+			fig = plt.figure(dpi=100)
+		except Exception as e:
+			print("Use: {} file_to_plot.txt -option key -option2 key2...".format(arglist[0]))
+			print("Available options:")
+			self.options["-help"]([])
+			raise(e)
+
+	def apply_options(self):
+		for opt in list(self.selected_options.keys()):
+			self.options[opt](self.selected_options[opt])
+
+	def plot(self, showfig):
+		self.apply_options()
+		if(showfig):
+			if("-errors" not in list(self.selected_options.keys())):
+				plt.plot(self.data[:,0], self.data[:,1], label=self.filename)
+			leg = plt.legend()
+			if(self.labels is not None):
+				for i in range(len(self.labels)):
+					leg.get_texts()[i].set_text(self.labels[i])
+			plt.show()
+
+def main():
+	try:
+		plotter = Plotter(sys.argv)
+		if "-noplot" not in sys.argv:
+			plotter.plot(True)
+		else:
+			plotter.plot(False)
+	except Exception as e:
+		print(e)
+
+	
+if __name__ == '__main__':
+	main()
